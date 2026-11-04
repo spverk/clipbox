@@ -13,9 +13,19 @@
 
 ## 一键安装
 
+有 sudo 的普通用户：
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/spverk/clipbox/main/install.sh | sudo sh -s -- --port 28080
 ```
+
+已经是 root（提示符为 `#`）或系统里没有 `sudo` 时，去掉 `sudo`：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/spverk/clipbox/main/install.sh | sh -s -- --port 28080
+```
+
+> 不要把 URL 包在反引号里，也不要写成 `... | sudo` 之类的形式，否则 shell 会先执行 URL 而不是下载脚本。
 
 安装脚本会：下载对应架构的二进制、创建 `clipbox` 系统用户、写入 systemd 服务、设置内存上限、开机自启、尽力放行防火墙端口。
 
@@ -30,11 +40,35 @@ curl -fsSL https://raw.githubusercontent.com/spverk/clipbox/main/install.sh | su
 --uninstall              # 卸载（保留数据）
 ```
 
-卸载：
+卸载（root 用户去掉 `sudo`）：
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/spverk/clipbox/main/install.sh | sudo sh -s -- --uninstall
 ```
+
+## 没有 systemd 时（Alpine / Docker / LXC）
+
+安装脚本只支持 systemd。先用 `command -v systemctl` 确认，没有输出就手动运行：
+
+```sh
+curl -fL -o /usr/local/bin/clipbox \
+  https://github.com/spverk/clipbox/releases/latest/download/clipbox-linux-amd64
+chmod +x /usr/local/bin/clipbox
+mkdir -p /var/lib/clipbox
+
+GOMEMLIMIT=16MiB GOGC=50 /usr/local/bin/clipbox \
+  --bind 0.0.0.0 --port 28080 --dir /var/lib/clipbox --max-size 2G
+```
+
+确认能访问后改用后台运行：
+
+```sh
+GOMEMLIMIT=16MiB GOGC=50 nohup /usr/local/bin/clipbox \
+  --bind 0.0.0.0 --port 28080 --dir /var/lib/clipbox --max-size 2G \
+  > /var/log/clipbox.log 2>&1 &
+```
+
+这种环境没有开机自启，需要自己放进 rc.local、容器 entrypoint 或 supervisord。ARM 机器把下载地址里的 `amd64` 改成 `arm64`。
 
 ## 网页使用
 
@@ -106,6 +140,7 @@ curl -fsSL http://IP:28080/api/health
 - 下载用 `http.ServeContent` 流式输出。
 - 单文件默认上限 2G，文字单窗口上限 2MiB，最多 30 个窗口。
 - systemd 单元设置 `GOMEMLIMIT=16MiB`、`GOGC=50`、`MemoryHigh=20M`、`MemoryMax=28M`，给同一台机器上的 sing-box 等其它服务留出内存。
+- 64M 机器与 sing-box 同机时，建议 sing-box 也设 `GOMEMLIMIT=16MiB` 并关闭 WARP；整机预算约为系统 8–12MB + sing-box 20–30MB + clipbox 5–8MB。
 
 实测同时上传 200MB 文件时，进程 RSS 约 6MB。
 
