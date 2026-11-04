@@ -159,7 +159,7 @@ User=$SERVICE_USER
 Group=$SERVICE_USER
 ExecStart=$BIN --bind $BIND --port $PORT --dir $DIR --max-size $MAX_SIZE
 WorkingDirectory=$DIR
-Environment=GOMEMLIMIT=40MiB
+Environment=GOMEMLIMIT=16MiB
 Environment=GOGC=50
 Restart=always
 RestartSec=3
@@ -169,8 +169,8 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=$DIR
-MemoryHigh=48M
-MemoryMax=56M
+MemoryHigh=20M
+MemoryMax=28M
 LimitNOFILE=8192
 
 [Install]
