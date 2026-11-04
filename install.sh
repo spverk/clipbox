@@ -189,7 +189,8 @@ if ! curl -fL --retry 2 --connect-timeout 10 -o "$TMP" "$URL"; then
     echo "请确认仓库已发布 Release，或检查网络。" >&2
     exit 1
 fi
-install -m 0755 "$TMP" "$BIN"
+cp "$TMP" "$BIN"
+chmod 0755 "$BIN"
 
 echo "==> 写入启动脚本 $RUNNER"
 cat > "$RUNNER" <<EOF
