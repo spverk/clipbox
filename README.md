@@ -6,7 +6,7 @@
 - 网页根目录直接上传 / 下载，新文件自动替换旧文件
 - 多个文字窗口，在线编辑、自动保存、一键复制
 - 服务器上 `curl` 一条命令直传，不装客户端
-- systemd 开机自启，一条命令安装
+- systemd / OpenRC 开机自启；纯容器环境自动后台运行并提供 `clipboxctl`
 - 数据就是普通文件，随时备份、随时迁移
 
 > 无鉴权裸奔，仅适合自己临时传东西。请使用高位端口，不要放敏感数据到公网。
@@ -27,7 +27,7 @@ curl -fsSL https://raw.githubusercontent.com/spverk/clipbox/main/install.sh | sh
 
 > 不要把 URL 包在反引号里，也不要写成 `... | sudo` 之类的形式，否则 shell 会先执行 URL 而不是下载脚本。
 
-安装脚本会：下载对应架构的二进制、创建 `clipbox` 系统用户、写入 systemd 服务、设置内存上限、开机自启、尽力放行防火墙端口。
+安装脚本会：下载对应架构的二进制、自动识别 systemd / OpenRC / 纯容器环境、配置开机自启（容器内则后台启动并提供 `clipboxctl`）、设置内存上限、尽力放行防火墙端口。
 
 可选参数：
 
@@ -46,9 +46,26 @@ curl -fsSL https://raw.githubusercontent.com/spverk/clipbox/main/install.sh | sh
 curl -fsSL https://raw.githubusercontent.com/spverk/clipbox/main/install.sh | sudo sh -s -- --uninstall
 ```
 
-## 没有 systemd 时（Alpine / Docker / LXC）
+## 没有 systemd 时（Podman / Docker / LXC）
 
-安装脚本只支持 systemd。先用 `command -v systemctl` 确认，没有输出就手动运行：
+安装脚本会自动识别环境：
+
+- 有 systemd：写入服务并开机自启
+- 有 OpenRC（Alpine 等）：写入 `/etc/init.d/clipbox` 并加入默认运行级别
+- 都没有：直接后台启动，并生成 `/usr/local/bin/clipboxctl`
+
+容器内没有 init，容器重启后需要重新拉起：
+
+```sh
+clipboxctl start     # 启动
+clipboxctl status    # 状态
+clipboxctl stop      # 停止
+clipboxctl restart   # 重启
+```
+
+如果是 Podman / Docker，把 `clipboxctl start` 写进容器的启动命令或 entrypoint；宿主机 `--restart=always` 只负责重启容器，不会自动拉起容器里的进程。
+
+完全手动安装（不跑安装脚本）时：
 
 ```sh
 curl -fL -o /usr/local/bin/clipbox \
@@ -60,15 +77,7 @@ GOMEMLIMIT=16MiB GOGC=50 /usr/local/bin/clipbox \
   --bind 0.0.0.0 --port 28080 --dir /var/lib/clipbox --max-size 2G
 ```
 
-确认能访问后改用后台运行：
-
-```sh
-GOMEMLIMIT=16MiB GOGC=50 nohup /usr/local/bin/clipbox \
-  --bind 0.0.0.0 --port 28080 --dir /var/lib/clipbox --max-size 2G \
-  > /var/log/clipbox.log 2>&1 &
-```
-
-这种环境没有开机自启，需要自己放进 rc.local、容器 entrypoint 或 supervisord。ARM 机器把下载地址里的 `amd64` 改成 `arm64`。
+ARM 机器把下载地址里的 `amd64` 改成 `arm64`。
 
 ## 网页使用
 
