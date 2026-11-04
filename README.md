@@ -105,7 +105,7 @@ curl -fsSL http://IP:28080/api/health
 - multipart 用 `MultipartReader` 逐段读取，避免整文件缓冲。
 - 下载用 `http.ServeContent` 流式输出。
 - 单文件默认上限 2G，文字单窗口上限 2MiB，最多 30 个窗口。
-- systemd 单元设置 `GOMEMLIMIT=40MiB`、`GOGC=50`、`MemoryHigh=48M`、`MemoryMax=56M`。
+- systemd 单元设置 `GOMEMLIMIT=16MiB`、`GOGC=50`、`MemoryHigh=20M`、`MemoryMax=28M`，给同一台机器上的 sing-box 等其它服务留出内存。
 
 实测同时上传 200MB 文件时，进程 RSS 约 6MB。
 
