@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>轻传盒 · 不登录也能传</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2358c4ff'/%3E%3Cpath d='M16 7v12m0 0l-5-5m5 5l5-5M9 24h14' stroke='%23081018' stroke-width='2.4' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <span class="logo">轻</span>
+      <div>
+        <h1>轻传盒</h1>
+        <p>不登录也能传文件、传文字</p>
+      </div>
+    </div>
+    <div class="status" id="status">
+      <span class="dot"></span><span id="status-text">连接中</span>
+    </div>
+  </header>
+
+  <main class="grid">
+    <section class="card file-card">
+      <div class="card-head">
+        <h2>文件槽</h2>
+        <span class="hint" id="file-limit"></span>
+      </div>
+
+      <div id="file-empty">
+        <div class="drop" id="drop" role="button" tabindex="0" aria-label="选择或拖入文件">
+          <svg class="drop-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 16V4m0 0l-4 4m4-4l4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <p class="drop-title">拖文件到这里，或点击选择</p>
+          <p class="drop-sub">新上传会替换旧文件，只保留一个</p>
+          <input type="file" id="file-input" hidden>
+        </div>
+      </div>
+
+      <div id="file-view" class="file-view" hidden>
+        <div class="file-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M6 3h7l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M13 3v5h5" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+        </div>
+        <div class="file-info">
+          <p class="file-name" id="file-name"></p>
+          <p class="file-meta" id="file-meta"></p>
+        </div>
+        <div class="file-actions">
+          <a class="btn primary" id="download" href="/api/download">下载</a>
+          <button class="btn" id="replace" type="button">替换</button>
+          <button class="btn ghost danger" id="delete-file" type="button">删除</button>
+        </div>
+      </div>
+
+      <div class="progress-wrap" id="progress-wrap" hidden>
+        <progress id="progress" max="100" value="0"></progress>
+        <span id="progress-text">0%</span>
+      </div>
+    </section>
+
+    <section class="card text-card">
+      <div class="card-head">
+        <h2>文字窗口</h2>
+        <button class="btn ghost" id="new-text" type="button">+ 新建窗口</button>
+      </div>
+
+      <div class="tabs" id="tabs" role="tablist"></div>
+
+      <div class="editor">
+        <div class="editor-head">
+          <input id="text-title" class="title-input" maxlength="60" placeholder="窗口标题" aria-label="窗口标题">
+          <span class="meta" id="text-meta"></span>
+        </div>
+        <textarea id="text-content" spellcheck="false" placeholder="在这里输入或粘贴文字，自动保存…" aria-label="文字内容"></textarea>
+        <div class="editor-foot">
+          <span id="char-count">0 字</span>
+          <div class="actions">
+            <button class="btn" id="copy-text" type="button">复制全文</button>
+            <button class="btn ghost danger" id="delete-text" type="button">删除窗口</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card cmd-card">
+      <div class="card-head">
+        <h2>命令行直传</h2>
+        <span class="hint">在服务器上复制即用</span>
+      </div>
+      <div class="cmds" id="cmd-list"></div>
+    </section>
+  </main>
+
+  <footer>
+    轻传盒 · 无登录 · 无数据库 · 数据只保存在这台机器上
+  </footer>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+<script src="/app.js" defer></script>
+</body>
+</html>

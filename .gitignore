@@ -1,0 +1,5 @@
+/clipbox
+/data/
+/dist/
+*.log
+.DS_Store
