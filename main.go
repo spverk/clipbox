@@ -31,11 +31,13 @@ func main() {
 	}
 
 	var (
-		bind        = flag.String("bind", "0.0.0.0", "监听地址")
-		port        = flag.Int("port", 28080, "监听端口")
-		dir         = flag.String("dir", "./data", "数据目录")
-		maxSizeText = flag.String("max-size", "2G", "单个上传文件上限，支持 B/K/M/G")
-		showVersion = flag.Bool("version", false, "打印版本号后退出")
+		bind          = flag.String("bind", "0.0.0.0", "监听地址")
+		port          = flag.Int("port", 28080, "监听端口")
+		dir           = flag.String("dir", "./data", "数据目录")
+		maxSizeText   = flag.String("max-size", "2G", "单个上传文件上限，支持 B/K/M/G")
+		chunkLimit    = flag.String("chunk-threshold", "90M", "超过该大小改用分片上传，支持 B/K/M/G")
+		chunkSizeText = flag.String("chunk-size", "8M", "分片大小，支持 B/K/M/G")
+		showVersion   = flag.Bool("version", false, "打印版本号后退出")
 	)
 	flag.Parse()
 
@@ -47,6 +49,20 @@ func main() {
 	maxUpload, err := parseSize(*maxSizeText)
 	if err != nil {
 		log.Fatalf("--max-size 无效: %v", err)
+	}
+	chunkThreshold, err := parseSize(*chunkLimit)
+	if err != nil {
+		log.Fatalf("--chunk-threshold 无效: %v", err)
+	}
+	chunkSize, err := parseSize(*chunkSizeText)
+	if err != nil {
+		log.Fatalf("--chunk-size 无效: %v", err)
+	}
+	if chunkThreshold > maxUpload {
+		chunkThreshold = maxUpload
+	}
+	if chunkSize > maxUpload {
+		chunkSize = maxUpload
 	}
 
 	store, err := NewStore(*dir)
@@ -68,11 +84,13 @@ func main() {
 	}
 
 	srv := &Server{
-		store:     store,
-		maxUpload: maxUpload,
-		index:     index,
-		app:       app,
-		css:       css,
+		store:          store,
+		maxUpload:      maxUpload,
+		chunkThreshold: chunkThreshold,
+		chunkSize:      chunkSize,
+		index:          index,
+		app:            app,
+		css:            css,
 	}
 
 	httpSrv := &http.Server{
@@ -87,8 +105,9 @@ func main() {
 	defer stop()
 
 	go func() {
-		log.Printf("轻传盒 %s 已启动: http://%s:%d  数据目录=%s  单文件上限=%s",
-			version, displayHost(*bind), *port, *dir, formatSize(maxUpload))
+		log.Printf("轻传盒 %s 已启动: http://%s:%d  数据目录=%s  单文件上限=%s  分片阈值=%s 分片大小=%s",
+			version, displayHost(*bind), *port, *dir, formatSize(maxUpload),
+			formatSize(chunkThreshold), formatSize(chunkSize))
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("服务启动失败: %v", err)
 		}

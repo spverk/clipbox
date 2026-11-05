@@ -35,6 +35,7 @@ const state = {
   texts: [],
   activeId: null,
   maxUpload: 0,
+  chunkThreshold: 0,
   maxText: 0,
   lastUpdated: '',
   dirty: false,
@@ -175,66 +176,150 @@ function updateButtons() {
   el.drop.style.pointerEvents = state.uploading ? 'none' : '';
 }
 
-function uploadFile(file) {
+function setProgress(pct) {
+  el.progress.value = pct;
+  el.progressText.textContent = pct + '%';
+}
+
+function parseResponse(xhr) {
+  try {
+    return JSON.parse(xhr.responseText || 'null');
+  } catch (err) {
+    return null;
+  }
+}
+
+function uploadDirect(file) {
+  return new Promise((resolve, reject) => {
+    const form = new FormData();
+    form.append('file', file, file.name || 'upload.bin');
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/upload');
+    xhr.responseType = 'text';
+
+    xhr.upload.onprogress = (ev) => {
+      if (!ev.lengthComputable) return;
+      setProgress(Math.min(100, Math.round((ev.loaded / ev.total) * 100)));
+    };
+
+    xhr.onload = () => {
+      const data = parseResponse(xhr);
+      if (xhr.status >= 200 && xhr.status < 300 && data) {
+        resolve(data);
+      } else {
+        reject(new Error((data && data.error) || ('上传失败（' + xhr.status + '）')));
+      }
+    };
+    xhr.onerror = () => reject(new Error('上传失败，网络中断'));
+    xhr.send(form);
+  });
+}
+
+function uploadChunkOnce(id, offset, blob, total) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', '/api/upload/chunk?id=' + encodeURIComponent(id) + '&offset=' + offset);
+    xhr.responseType = 'text';
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+
+    xhr.upload.onprogress = (ev) => {
+      if (!ev.lengthComputable) return;
+      setProgress(Math.min(100, Math.round(((offset + ev.loaded) / total) * 100)));
+    };
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve();
+        return;
+      }
+      const data = parseResponse(xhr);
+      // 响应丢失后重试同一片时，服务端会返回已收到的偏移量，说明这片其实已经写入了。
+      if (xhr.status === 409 && data && data.received >= offset + blob.size) {
+        resolve();
+        return;
+      }
+      const err = new Error((data && data.error) || ('分片上传失败（' + xhr.status + '）'));
+      err.status = xhr.status;
+      err.retry = xhr.status === 408 || xhr.status === 429 || xhr.status >= 500;
+      reject(err);
+    };
+    xhr.onerror = () => {
+      const err = new Error('分片上传失败，网络中断');
+      err.retry = true;
+      reject(err);
+    };
+    xhr.send(blob);
+  });
+}
+
+async function uploadChunk(id, offset, blob, total) {
+  let last = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await uploadChunkOnce(id, offset, blob, total);
+      return;
+    } catch (err) {
+      last = err;
+      if (!err.retry) break;
+      setProgress(Math.round((offset / total) * 100));
+      await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+    }
+  }
+  throw last;
+}
+
+async function uploadChunked(file) {
+  const init = await api('/api/upload/init', {
+    method: 'POST',
+    body: JSON.stringify({ name: file.name || 'upload.bin', size: file.size }),
+  });
+  const chunkSize = init.chunk_size || 8 << 20;
+
+  try {
+    for (let offset = 0; offset < file.size; offset += chunkSize) {
+      const end = Math.min(offset + chunkSize, file.size);
+      await uploadChunk(init.id, offset, file.slice(offset, end), file.size);
+      setProgress(Math.min(100, Math.round((end / file.size) * 100)));
+    }
+    return await api('/api/upload/complete?id=' + encodeURIComponent(init.id), { method: 'POST' });
+  } catch (err) {
+    api('/api/upload?id=' + encodeURIComponent(init.id), { method: 'DELETE' }).catch(() => {});
+    throw err;
+  }
+}
+
+async function uploadFile(file) {
   if (!file || state.uploading) return;
   if (state.maxUpload && file.size > state.maxUpload) {
     toast('文件超过上限 ' + fmtSize(state.maxUpload), true);
     return;
   }
 
-  const form = new FormData();
-  form.append('file', file, file.name || 'upload.bin');
-
   state.uploading = true;
   updateButtons();
   el.progressWrap.hidden = false;
-  el.progress.value = 0;
-  el.progressText.textContent = '0%';
+  setProgress(0);
 
-  const xhr = new XMLHttpRequest();
-  xhr.open('POST', '/api/upload');
-  xhr.responseType = 'text';
-
-  xhr.upload.onprogress = (ev) => {
-    if (!ev.lengthComputable) return;
-    const pct = Math.min(100, Math.round((ev.loaded / ev.total) * 100));
-    el.progress.value = pct;
-    el.progressText.textContent = pct + '%';
-  };
-
-  xhr.onload = () => {
-    let data = null;
-    try {
-      data = JSON.parse(xhr.responseText || 'null');
-    } catch (err) {
-      data = null;
-    }
-    if (xhr.status >= 200 && xhr.status < 300 && data) {
-      state.file = data;
-      renderFile();
-      el.progress.value = 100;
-      el.progressText.textContent = '100%';
-      toast('上传完成：' + (data.name || '文件'));
-      setTimeout(() => {
-        el.progressWrap.hidden = true;
-      }, 700);
-    } else {
-      toast((data && data.error) || ('上传失败（' + xhr.status + '）'), true);
+  try {
+    const meta =
+      state.chunkThreshold && file.size > state.chunkThreshold
+        ? await uploadChunked(file)
+        : await uploadDirect(file);
+    state.file = meta;
+    renderFile();
+    setProgress(100);
+    toast('上传完成：' + (meta.name || '文件'));
+    setTimeout(() => {
       el.progressWrap.hidden = true;
-    }
-  };
-
-  xhr.onerror = () => {
-    toast('上传失败，网络中断', true);
+    }, 700);
+  } catch (err) {
+    toast(err.message || '上传失败', true);
     el.progressWrap.hidden = true;
-  };
-
-  xhr.onloadend = () => {
+  } finally {
     state.uploading = false;
     updateButtons();
-  };
-
-  xhr.send(form);
+  }
 }
 
 el.drop.addEventListener('click', () => el.fileInput.click());
@@ -533,6 +618,7 @@ async function refreshState() {
   state.file = data.file || null;
   state.texts = data.texts || [];
   state.maxUpload = data.max_upload || 0;
+  state.chunkThreshold = data.chunk_threshold || 0;
   state.maxText = data.max_text || 0;
 
   renderFile();

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +20,9 @@ import (
 var (
 	ErrNotFound     = errors.New("not found")
 	ErrTooLarge     = errors.New("too large")
+	ErrBadOffset    = errors.New("bad offset")
+	ErrIncomplete   = errors.New("incomplete")
+	ErrBadChunk     = errors.New("bad chunk")
 	ErrLastText     = errors.New("last text")
 	ErrTooManyTexts = errors.New("too many texts")
 )
@@ -27,6 +32,11 @@ const (
 	MaxTextBytes = 2 << 20
 	// MaxTexts 最多允许的窗口数量。
 	MaxTexts = 30
+
+	// DefaultChunkThreshold 超过该大小的文件走分片上传，给 Cloudflare 100MB 单请求上限留余量。
+	DefaultChunkThreshold int64 = 90 << 20
+	// DefaultChunkSize 默认分片大小，慢上行时也不会撞上 Cloudflare 的 100 秒超时。
+	DefaultChunkSize int64 = 8 << 20
 )
 
 // FileMeta 文件槽的元数据。
@@ -52,9 +62,21 @@ type textIndex struct {
 type Store struct {
 	mu       sync.Mutex
 	uploadMu sync.Mutex
+	chunkMu  sync.Mutex
 	dir      string
 	fileMeta FileMeta
 	texts    textIndex
+	chunk    *chunkSession
+}
+
+// chunkSession 一次分片上传的临时状态，同一时间只保留一个。
+type chunkSession struct {
+	id       string
+	name     string
+	size     int64
+	received int64
+	path     string
+	file     *os.File
 }
 
 func NewStore(dir string) (*Store, error) {
@@ -63,6 +85,9 @@ func NewStore(dir string) (*Store, error) {
 		if err := os.MkdirAll(d, 0o750); err != nil {
 			return nil, err
 		}
+	}
+	if err := cleanTempFiles(s.fileDir()); err != nil {
+		return nil, err
 	}
 	if err := s.loadFile(); err != nil {
 		return nil, err
@@ -82,6 +107,22 @@ func (s *Store) textIndexPath() string {
 }
 func (s *Store) textPath(id int) string {
 	return filepath.Join(s.textDir(), strconv.Itoa(id)+".txt")
+}
+
+// cleanTempFiles 清理上次异常退出留下的临时文件。
+func cleanTempFiles(dir string) error {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range ents {
+		name := e.Name()
+		if e.IsDir() || (!strings.HasPrefix(name, ".chunk-") && !strings.HasPrefix(name, ".upload-")) {
+			continue
+		}
+		_ = os.Remove(filepath.Join(dir, name))
+	}
+	return nil
 }
 
 func (s *Store) loadFile() error {
@@ -211,6 +252,11 @@ func (s *Store) SaveFile(name string, r io.Reader, limit int64) (FileMeta, error
 	if n > limit {
 		return FileMeta{}, ErrTooLarge
 	}
+	return s.commitFileLocked(name, tmpName, n)
+}
+
+// commitFileLocked 把临时文件原子替换为当前文件，调用方需持有 uploadMu。
+func (s *Store) commitFileLocked(name, tmpName string, size int64) (FileMeta, error) {
 	if err := os.Chmod(tmpName, 0o640); err != nil {
 		return FileMeta{}, err
 	}
@@ -218,7 +264,7 @@ func (s *Store) SaveFile(name string, r io.Reader, limit int64) (FileMeta, error
 		return FileMeta{}, err
 	}
 
-	meta := FileMeta{Name: cleanName(name), Size: n, Updated: time.Now().UTC()}
+	meta := FileMeta{Name: cleanName(name), Size: size, Updated: time.Now().UTC()}
 	s.mu.Lock()
 	s.fileMeta = meta
 	s.mu.Unlock()
@@ -227,6 +273,118 @@ func (s *Store) SaveFile(name string, r io.Reader, limit int64) (FileMeta, error
 		if err := writeAtomic(s.fileMetaPath(), b, 0o640); err != nil {
 			return meta, err
 		}
+	}
+	return meta, nil
+}
+
+// NewChunkSession 创建分片上传会话；旧的未完成会话会被丢弃。
+func (s *Store) NewChunkSession(name string, size int64) (string, error) {
+	if size <= 0 {
+		return "", ErrBadChunk
+	}
+	s.chunkMu.Lock()
+	defer s.chunkMu.Unlock()
+	s.abortChunkLocked()
+
+	tmp, err := os.CreateTemp(s.fileDir(), ".chunk-*")
+	if err != nil {
+		return "", err
+	}
+	tmpName := tmp.Name()
+	_ = tmp.Close()
+
+	f, err := os.OpenFile(tmpName, os.O_WRONLY|os.O_APPEND, 0o640)
+	if err != nil {
+		_ = os.Remove(tmpName)
+		return "", err
+	}
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpName)
+		return "", err
+	}
+	id := hex.EncodeToString(buf)
+	s.chunk = &chunkSession{id: id, name: name, size: size, path: tmpName, file: f}
+	return id, nil
+}
+
+// AppendChunk 按顺序追加一个分片，offset 必须等于已接收字节数。
+func (s *Store) AppendChunk(id string, offset int64, r io.Reader, expected int64) (int64, error) {
+	s.chunkMu.Lock()
+	defer s.chunkMu.Unlock()
+
+	cs := s.chunk
+	if cs == nil || cs.id != id {
+		return 0, ErrNotFound
+	}
+	if offset != cs.received {
+		return cs.received, ErrBadOffset
+	}
+	if expected >= 0 && offset+expected > cs.size {
+		return cs.received, ErrTooLarge
+	}
+
+	n, err := io.Copy(cs.file, r)
+	if err != nil {
+		_ = cs.file.Truncate(cs.received)
+		return cs.received, err
+	}
+	if n == 0 || (expected >= 0 && n != expected) {
+		_ = cs.file.Truncate(cs.received)
+		return cs.received, ErrBadChunk
+	}
+	if cs.received+n > cs.size {
+		_ = cs.file.Truncate(cs.received)
+		return cs.received, ErrTooLarge
+	}
+	cs.received += n
+	return cs.received, nil
+}
+
+// AbortChunkSession 放弃分片上传并删除临时文件。
+func (s *Store) AbortChunkSession(id string) error {
+	s.chunkMu.Lock()
+	defer s.chunkMu.Unlock()
+	if s.chunk == nil || s.chunk.id != id {
+		return ErrNotFound
+	}
+	s.abortChunkLocked()
+	return nil
+}
+
+func (s *Store) abortChunkLocked() {
+	if s.chunk == nil {
+		return
+	}
+	_ = s.chunk.file.Close()
+	_ = os.Remove(s.chunk.path)
+	s.chunk = nil
+}
+
+// CompleteChunkSession 校验分片完整后原子替换为当前文件。
+func (s *Store) CompleteChunkSession(id string) (FileMeta, error) {
+	s.chunkMu.Lock()
+	cs := s.chunk
+	if cs == nil || cs.id != id {
+		s.chunkMu.Unlock()
+		return FileMeta{}, ErrNotFound
+	}
+	if cs.received != cs.size {
+		s.chunkMu.Unlock()
+		return FileMeta{}, ErrIncomplete
+	}
+	name, path, size := cs.name, cs.path, cs.size
+	_ = cs.file.Close()
+	s.chunk = nil
+	s.chunkMu.Unlock()
+
+	s.uploadMu.Lock()
+	defer s.uploadMu.Unlock()
+	meta, err := s.commitFileLocked(name, path, size)
+	if err != nil {
+		_ = os.Remove(path)
+		return FileMeta{}, err
 	}
 	return meta, nil
 }

@@ -36,6 +36,8 @@ curl -fsSL https://raw.githubusercontent.com/spverk/clipbox/main/install.sh | sh
 --dir /var/lib/clipbox   # 数据目录
 --bind 0.0.0.0           # 监听地址
 --max-size 2G            # 单文件上限
+--chunk-threshold 90M    # 超过该大小改用分片上传（适配 Cloudflare 100MB 单请求上限）
+--chunk-size 8M          # 每片大小
 --repo owner/repo        # 自定义 GitHub 仓库
 --uninstall              # 卸载（保留数据）
 ```
@@ -118,6 +120,10 @@ curl -fsSL http://IP:28080/api/health
 | GET | `/api/health` | 健康检查 |
 | GET | `/api/state` | 文件信息、窗口列表、上限、版本 |
 | POST / PUT | `/api/upload` | 上传文件（multipart 或 raw body） |
+| POST | `/api/upload/init` | 初始化分片上传，body 为 `{"name":"...","size":123}` |
+| PUT | `/api/upload/chunk?id=&offset=` | 按顺序上传分片（raw body） |
+| POST | `/api/upload/complete?id=` | 校验分片完整后原子替换为当前文件 |
+| DELETE | `/api/upload?id=` | 放弃分片上传并清理临时文件 |
 | GET | `/api/download` | 下载当前文件，支持 Range |
 | DELETE | `/api/file` | 删除当前文件 |
 | GET | `/api/texts` | 窗口列表 |

@@ -13,11 +13,13 @@ import (
 )
 
 type Server struct {
-	store     *Store
-	maxUpload int64
-	index     []byte
-	app       []byte
-	css       []byte
+	store          *Store
+	maxUpload      int64
+	chunkThreshold int64
+	chunkSize      int64
+	index          []byte
+	app            []byte
+	css            []byte
 }
 
 func (s *Server) routes() http.Handler {
@@ -32,6 +34,10 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("POST /api/upload", s.handleUpload)
 	mux.HandleFunc("PUT /api/upload", s.handleUpload)
+	mux.HandleFunc("POST /api/upload/init", s.handleUploadInit)
+	mux.HandleFunc("PUT /api/upload/chunk", s.handleUploadChunk)
+	mux.HandleFunc("POST /api/upload/complete", s.handleUploadComplete)
+	mux.HandleFunc("DELETE /api/upload", s.handleUploadAbort)
 	mux.HandleFunc("GET /api/download", s.handleDownload)
 	mux.HandleFunc("DELETE /api/file", s.handleDeleteFile)
 
@@ -80,11 +86,13 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		file = &meta
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"file":       file,
-		"texts":      s.store.ListTexts(),
-		"max_upload": s.maxUpload,
-		"max_text":   MaxTextBytes,
-		"version":    version,
+		"file":            file,
+		"texts":           s.store.ListTexts(),
+		"max_upload":      s.maxUpload,
+		"max_text":        MaxTextBytes,
+		"chunk_threshold": s.chunkThreshold,
+		"chunk_size":      s.chunkSize,
+		"version":         version,
 	})
 }
 
@@ -147,6 +155,100 @@ func (s *Server) handleRawUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, meta)
+}
+
+func (s *Server) handleUploadInit(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Name string `json:"name"`
+		Size int64  `json:"size"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	if payload.Size <= 0 {
+		writeErr(w, http.StatusBadRequest, "文件大小无效")
+		return
+	}
+	if payload.Size > s.maxUpload {
+		writeErr(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("文件超过上限 %s", formatSize(s.maxUpload)))
+		return
+	}
+
+	id, err := s.store.NewChunkSession(payload.Name, payload.Size)
+	if err != nil {
+		log.Printf("创建分片上传失败: %v", err)
+		writeErr(w, http.StatusInternalServerError, "创建上传失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":         id,
+		"chunk_size": s.chunkSize,
+		"received":   0,
+	})
+}
+
+func (s *Server) handleUploadChunk(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	offset, err := strconv.ParseInt(r.URL.Query().Get("offset"), 10, 64)
+	if id == "" || err != nil || offset < 0 {
+		writeErr(w, http.StatusBadRequest, "分片参数错误")
+		return
+	}
+	if r.ContentLength > s.chunkSize {
+		writeErr(w, http.StatusRequestEntityTooLarge, "分片过大")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, s.chunkSize)
+	received, err := s.store.AppendChunk(id, offset, r.Body, r.ContentLength)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNotFound):
+			writeErr(w, http.StatusNotFound, "上传会话不存在")
+		case errors.Is(err, ErrBadOffset):
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":    "分片顺序错误",
+				"received": received,
+			})
+		case errors.Is(err, ErrTooLarge) || isTooLarge(err):
+			writeErr(w, http.StatusRequestEntityTooLarge, "分片超出文件大小或上限")
+		case errors.Is(err, ErrBadChunk):
+			writeErr(w, http.StatusBadRequest, "分片内容不完整")
+		default:
+			log.Printf("分片上传失败: %v", err)
+			writeErr(w, http.StatusInternalServerError, "分片上传失败")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"received": received})
+}
+
+func (s *Server) handleUploadComplete(w http.ResponseWriter, r *http.Request) {
+	meta, err := s.store.CompleteChunkSession(r.URL.Query().Get("id"))
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNotFound):
+			writeErr(w, http.StatusNotFound, "上传会话不存在")
+		case errors.Is(err, ErrIncomplete):
+			writeErr(w, http.StatusBadRequest, "分片尚未传完")
+		default:
+			log.Printf("合并分片失败: %v", err)
+			writeErr(w, http.StatusInternalServerError, "合并分片失败")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, meta)
+}
+
+func (s *Server) handleUploadAbort(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.AbortChunkSession(r.URL.Query().Get("id")); err != nil && !errors.Is(err, ErrNotFound) {
+		log.Printf("放弃分片上传失败: %v", err)
+		writeErr(w, http.StatusInternalServerError, "放弃上传失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) failUpload(w http.ResponseWriter, err error) {
