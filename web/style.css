@@ -351,7 +351,7 @@ textarea::placeholder, .title-input::placeholder { color: rgba(139, 154, 182, 0.
   flex-wrap: wrap;
 }
 
-.actions { display: flex; gap: 8px; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
 /* 命令 */
 .cmds { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 16px 18px 18px; }

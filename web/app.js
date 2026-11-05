@@ -24,6 +24,7 @@ const el = {
   textMeta: q('#text-meta'),
   charCount: q('#char-count'),
   copyText: q('#copy-text'),
+  clearText: q('#clear-text'),
   deleteText: q('#delete-text'),
   cmdList: q('#cmd-list'),
   fileLimit: q('#file-limit'),
@@ -522,6 +523,19 @@ el.copyText.addEventListener('click', async () => {
   } else {
     toast('复制失败，请手动选择', true);
   }
+});
+
+el.clearText.addEventListener('click', () => {
+  if (state.activeId == null) return;
+  if (!el.content.value) {
+    toast('当前窗口没有文字');
+    return;
+  }
+  if (!confirm('清空当前窗口的全部文字？')) return;
+  el.content.value = '';
+  updateCount();
+  scheduleSave();
+  el.content.focus();
 });
 
 el.deleteText.addEventListener('click', async () => {
