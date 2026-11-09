@@ -171,12 +171,18 @@ if [ "$MODE" != none ]; then
             exit 1
         fi
     fi
+    # 不能假设存在同名组：shadow 的 useradd -r 会建同名组，但 busybox
+    # adduser -S 创建的系统用户主组是 nogroup(65533)，/etc/group 里没有
+    # clipbox 组。硬编码 clipbox:clipbox 会让 chown / command_user 报
+    # "unknown user/group"。一律改用真实数值 UID:GID，跨平台都成立。
+    SVC_UID="$(id -u "$SERVICE_USER")"
+    SVC_GID="$(id -g "$SERVICE_USER")"
 fi
 
 echo "==> 准备数据目录 $DIR"
 mkdir -p "$DIR"
 if [ "$MODE" != none ]; then
-    chown -R "$SERVICE_USER:$SERVICE_USER" "$DIR"
+    chown -R "$SVC_UID:$SVC_GID" "$DIR"
 fi
 chmod 0750 "$DIR"
 
@@ -213,7 +219,6 @@ After=network.target
 [Service]
 Type=simple
 User=$SERVICE_USER
-Group=$SERVICE_USER
 ExecStart=$RUNNER
 WorkingDirectory=$DIR
 Environment=GOMEMLIMIT=16MiB
@@ -256,8 +261,17 @@ EOF
     openrc)
         echo "==> 写入 OpenRC 服务"
         : >> "$LOGFILE"
-        chown "$SERVICE_USER:$SERVICE_USER" "$LOGFILE" 2>/dev/null || true
+        chown "$SVC_UID:$SVC_GID" "$LOGFILE" 2>/dev/null || true
         chmod 0600 "$LOGFILE" 2>/dev/null || true
+
+        # 有 supervise-daemon 就加进程守护：clipbox 崩溃后自动拉起，
+        # 避免服务 crashed 后轻传盒域名一直回源失败(520)。
+        SUP_LINES=""
+        if command -v supervise-daemon >/dev/null 2>&1; then
+            SUP_LINES="supervisor=supervise-daemon
+respawn_delay=3
+respawn_max=100"
+        fi
 
         cat > "$OPENRC_SCRIPT" <<EOF
 #!/sbin/openrc-run
@@ -268,7 +282,8 @@ command="$RUNNER"
 command_background=true
 directory="$DIR"
 pidfile="$PIDFILE"
-command_user="$SERVICE_USER:$SERVICE_USER"
+command_user="$SVC_UID:$SVC_GID"
+$SUP_LINES
 output_log="$LOGFILE"
 error_log="$LOGFILE"
 
